@@ -1,0 +1,195 @@
+# Pengabingen – Tasklista & Roadmap
+
+## 🎯 Mål
+Bygga ett system för att simulera och förstå vägen till finansiell frihet.
+
+### Kortsiktigt mål
+- Stabilt  
+- Reproducerbart  
+- Deploybart  
+
+### Långsiktigt mål
+- Utbyggbar produkt (API / UI / scenarios)
+
+---
+
+## 🧱 Principer
+Vi optimerar för:
+
+1. Reproducerbarhet (det ska alltid funka)  
+2. Ren kärnlogik (testbar & isolerad)  
+3. Deploybarhet (ingen manuell VM-hack)  
+4. Utbyggbarhet (kan bli produkt)
+
+---
+
+## 📋 Tasks (prioriterade)
+
+---
+
+# 🥇 P0 – Stabil grund (MÅSTE)
+
+## 1. Dockerisera projektet
+**Beskrivning:**  
+- Lägg till Dockerfile  
+- Lägg till docker-compose.yml  
+
+**Varför:**  
+- Eliminerar "works on my machine"  
+- Gör deploy enkelt och reproducerbart  
+
+**Impact:** 🔥🔥🔥🔥🔥  
+**Effort:** låg  
+
+---
+
+## 2. Flytta config till `.env`
+**Beskrivning:**  
+- Flytta parametrar (ränta, sparande etc.) till env/config  
+
+**Varför:**  
+- Separera kod från data  
+- Gör simuleringar flexibla  
+
+**Impact:** 🔥🔥🔥🔥  
+**Effort:** låg  
+
+---
+
+## 3. Skapa `runSimulation(input)` entrypoint
+**Beskrivning:**  
+- All logik ska gå via en tydlig funktion  
+
+**Varför:**  
+- Gör systemet testbart  
+- Möjliggör API senare  
+
+**Impact:** 🔥🔥🔥🔥🔥  
+**Effort:** medium  
+
+---
+
+# 🥈 P1 – Struktur & kvalitet
+
+## 4. Refactor till lager (domain / application)
+**Beskrivning:**  
+- domain = ren logik  
+- application = use cases  
+
+**Varför:**  
+- Skalar bättre  
+- Tydlig ansvarsfördelning  
+
+**Impact:** 🔥🔥🔥🔥  
+**Effort:** medium  
+
+---
+
+## 5. Lägg till tester
+**Beskrivning:**  
+- Unit tests för:
+  - ränta-på-ränta  
+  - edge cases  
+  - FIRE-beräkningar  
+
+**Varför:**  
+- Säkerställer korrekt logik  
+- Bygger förtroende i systemet  
+
+**Impact:** 🔥🔥🔥🔥  
+**Effort:** låg–medium  
+
+---
+
+## 6. Sätt upp enkel CI/CD
+**Beskrivning:**  
+- GitHub Actions  
+- Auto deploy via SSH + Docker  
+
+**Varför:**  
+- Eliminera manuell deploy  
+- Gör projektet “production-like”  
+
+**Impact:** 🔥🔥🔥🔥  
+**Effort:** medium  
+
+---
+
+# 🥉 P2 – Användbarhet
+
+## 7. CLI interface
+**Beskrivning:**  
+- Kör simulering via CLI  
+
+**Exempel:**  
+npm run simulate scenario.json  
+
+**Varför:**  
+- Snabb feedback loop  
+- Gör systemet användbart direkt  
+
+**Impact:** 🔥🔥🔥  
+**Effort:** låg  
+
+---
+
+## 8. Strukturera output
+**Beskrivning:**  
+- JSON output  
+- Tydlig formatting  
+
+**Varför:**  
+- Gör resultat förståeligt  
+- Förbereder för UI  
+
+**Impact:** 🔥🔥🔥  
+**Effort:** låg  
+
+---
+
+# 🚀 P3 – Produkt (framtid)
+
+## 9. API  
+- POST /simulate  
+
+## 10. Frontend  
+- React UI  
+- sliders + grafer  
+
+## 11. Scenario engine  
+- Jämföra olika strategier  
+
+---
+
+## 🧭 Rekommenderad ordning
+
+1. Docker  
+2. `.env`  
+3. `runSimulation`  
+4. Refactor struktur  
+5. Tester  
+6. CI/CD  
+7. CLI  
+
+---
+
+## 🔥 Viktig insikt
+
+Nuvarande:  
+"kod som körs"  
+
+Mål:  
+"system med en simulation engine"  
+
+---
+
+## 🤖 Agent-loop instruktion
+
+När du använder denna fil:
+
+Säg t.ex:  
+- "börja med steg 1"  
+- "implementera steg 3"  
+- "refactora enligt steg 4"  
+
+Och iterera steg för steg.
