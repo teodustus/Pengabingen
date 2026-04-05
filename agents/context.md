@@ -51,10 +51,18 @@ daily_pnl(date, portfolio_value, daily_return)
 - Cron 21:10 UTC = 5 min efter börsens stängning (16:00 ET = 21:00 UTC)
 
 ### Nästa rimliga steg
-1. **Kör backtest.py** — validera strategin mot historisk data
-2. **Följ upp live.py** — kolla `logs/live.log` och `live_state.db` efter första körning
-3. **Telegram** — valfritt, sätt upp @BotFather + chat-ID i `.env` om du vill ha rapporter
-4. **Live-handel** — om paper trading visar bra resultat efter 3-6 månader: Saxo Bank OpenAPI (EU-reglerat, MiFID II, bra för svenska användare)
+1. **Följ upp live.py** — kolla `logs/live.log` och `live_state.db` efter första körning
+2. **Telegram** — valfritt, sätt upp @BotFather + chat-ID i `.env` om du vill ha rapporter
+3. **Live-handel US** — om paper trading visar bra resultat efter 3-6 månader: Saxo Bank OpenAPI (EU-reglerat, MiFID II, bra för svenska användare)
+4. **Svensk marknad** — separat projekt/experiment, se nedan
+
+### Framtida experiment: Svensk marknad
+- Testa dual momentum eller annan strategi mot OMX/svenska aktier
+- Kräver annan datakälla än yfinance (opålitlig för .ST-aktier)
+- Kräver annat marknadsfilter än SPY/VIX (ex. OMXS30 + VSTOXX eller liknande)
+- Potentiellt annan akademisk grund — undersök vad som faktiskt fungerat på nordiska marknader
+- Kandidater att undersöka: mean reversion, kvalitetsfaktorer (Piotroski F-score), utdelningsstrategier
+- Möjlig datakälla: Nasdaq Nordic API, Börsdata (svensk tjänst med bra historik för OMX)
 
 ### Beslut tagna
 - **Ingen Alpaca** — för mycket KYC, ersatt med lokal simulator
