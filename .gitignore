@@ -1,5 +1,6 @@
 # Databaser
 *.db
+!live_state.db   # paper trading-state — backas upp via git dagligen
 
 # Miljövariabler / secrets
 .env

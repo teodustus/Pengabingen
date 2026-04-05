@@ -333,7 +333,10 @@ def git_push_report(report_path: Path) -> bool:
     """
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     try:
-        subprocess.run(["git", "add", str(report_path)], check=True, capture_output=True)
+        files_to_add = [str(report_path)]
+        if LIVE_DB_PATH.exists():
+            files_to_add.append(str(LIVE_DB_PATH))
+        subprocess.run(["git", "add"] + files_to_add, check=True, capture_output=True)
         result = subprocess.run(
             ["git", "diff", "--cached", "--quiet"],
             capture_output=True,
