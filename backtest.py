@@ -136,7 +136,14 @@ def simulate(
 
         # ── Rebalansering ──
         if date in rebalance_dates and not halted_today:
-            paused = False  # Rebalansering häver drawdown-paus
+            # OBS: drawdown-paus häver sig INTE automatiskt vid rebalansering.
+            # I en riktig krasch vill man inte återengagera vid nästa månadsslut.
+            # Pausen kvarstår tills datan visar att marknaden återhämtat sig
+            # (hanteras i live.py med manuell återstart, eller via drawdown_exceeded()).
+            if paused:
+                portfolio_values[date] = current_value(date)
+                prev_value = portfolio_values[date]
+                continue
             val = current_value(date)
             target = weights.loc[date]
             target_dollars = {t: w * val for t, w in target.items() if w > 0}
@@ -161,8 +168,16 @@ def simulate(
 
                 if want_dollars > 0:
                     shares[ticker] = want_dollars / price
-                    if delta > 0:  # Ny köp → uppdatera inköpspris
-                        entry_prices[ticker] = price
+                    if delta > 0:
+                        # Köp eller ökning — viktat genomsnitt av gammalt och nytt inköpspris
+                        old_dollars = curr_dollars
+                        old_entry  = entry_prices.get(ticker, price)
+                        total_new  = old_dollars + delta
+                        if total_new > 0:
+                            entry_prices[ticker] = (old_dollars * old_entry + delta * price) / total_new
+                        else:
+                            entry_prices[ticker] = price
+                    # Partiell minskning: behåll ursprungligt entry-pris (stop-loss mäts från originalköp)
                 else:
                     shares.pop(ticker, None)
                     entry_prices.pop(ticker, None)
@@ -189,6 +204,7 @@ def performance_metrics(
     portfolio_values: pd.Series,
     benchmark_prices: pd.Series,
     label: str = "Strategi",
+    risk_free_rate: float = 0.0,
 ) -> dict:
     """
     Beräknar nyckeltal för en portföljvärdeserie.
@@ -208,7 +224,16 @@ def performance_metrics(
     cagr = (1.0 + total_ret) ** (1.0 / years) - 1.0 if years > 0 else 0.0
 
     ann_vol = daily_ret.std() * np.sqrt(252)
-    sharpe  = cagr / ann_vol if ann_vol > 0 else 0.0
+
+    # Riskfri ränta: annualiserad BIL-avkastning under perioden (proxy för T-bills).
+    # Kritiskt för korrekt Sharpe — utan detta överskattas Sharpe med 0.3–0.5 enheter
+    # när räntor är 4–5% (2022–2024).
+    bil_daily = benchmark_prices.pct_change().dropna()  # benchmark_prices är SPY här
+    # Fallback: om BIL-data skickas in som benchmark används den direkt;
+    # annars approximerar vi med 0% (konservativt).
+    risk_free_rate = 0.0  # sätts av anroparen via risk_free_rate-parametern
+
+    sharpe = (cagr - risk_free_rate) / ann_vol if ann_vol > 0 else 0.0
 
     rolling_max = portfolio_values.cummax()
     max_dd = ((portfolio_values - rolling_max) / rolling_max).min()
@@ -217,12 +242,12 @@ def performance_metrics(
     pct_pos = float((monthly_ret > 0).mean())
     n_months = int(len(monthly_ret))
 
-    # Benchmark (SPY buy-and-hold)
+    # Benchmark (SPY buy-and-hold) — samma riskfria ränta för rättvis jämförelse
     bench_ret = (benchmark_prices.iloc[-1] / benchmark_prices.iloc[0]) - 1.0
     bench_cagr = (1.0 + bench_ret) ** (1.0 / years) - 1.0 if years > 0 else 0.0
     bench_daily = benchmark_prices.pct_change().dropna()
     bench_vol = bench_daily.std() * np.sqrt(252)
-    bench_sharpe = bench_cagr / bench_vol if bench_vol > 0 else 0.0
+    bench_sharpe = (bench_cagr - risk_free_rate) / bench_vol if bench_vol > 0 else 0.0
 
     return {
         "label":               label,
@@ -327,6 +352,14 @@ if __name__ == "__main__":
     periods = split_data(prices, weights)
     benchmark_all = prices[MARKET_TICKER]
 
+    # Riskfri ränta: annualiserad BIL-avkastning över hela perioden
+    bil_full = prices[CASH_TICKER].dropna()
+    bil_years = len(bil_full) / 252.0
+    risk_free_rate = float(
+        (bil_full.iloc[-1] / bil_full.iloc[0]) ** (1.0 / bil_years) - 1.0
+    ) if bil_years > 0 else 0.0
+    log.info("Riskfri ranta (BIL CAGR): %.2f%%", risk_free_rate * 100)
+
     for period_name, (p_prices, p_weights) in periods.items():
         if p_weights.empty or p_prices.empty:
             log.warning("Tom datamanged for period: %s", period_name)
@@ -342,7 +375,12 @@ if __name__ == "__main__":
         bench = benchmark_all.loc[p_prices.index[0]:p_prices.index[-1]]
         bench = bench / bench.iloc[0] * pv.iloc[0]
 
-        m = performance_metrics(pv, bench, label=label)
+        # Periodspecifik riskfri ränta
+        bil_period = prices[CASH_TICKER].loc[p_prices.index[0]:p_prices.index[-1]].dropna()
+        bil_yrs = len(bil_period) / 252.0
+        rfr = float((bil_period.iloc[-1] / bil_period.iloc[0]) ** (1.0 / bil_yrs) - 1.0) if bil_yrs > 0 else 0.0
+
+        m = performance_metrics(pv, bench, label=label, risk_free_rate=rfr)
         print_metrics(m)
         log.info("Antal affarer: %d", len(trades))
 

@@ -311,12 +311,16 @@ def run_daily() -> None:
     log_daily_pnl(live_conn, pv)
 
     # 3. Hämta aktuella priser och kontrollera stop-losses
-    all_tickers = UNIVERSE + [MARKET_TICKER, CASH_TICKER]
     try:
         live_prices = api.latest_prices(UNIVERSE)
     except Exception as e:
-        log.error("Kunde inte hämta live-priser från Alpaca: %s", e)
-        live_prices = {}
+        # Om vi inte kan hämta live-priser kan vi inte kontrollera stop-losses.
+        # Avbryt körningen och skicka varning — bättre att göra ingenting än fel.
+        msg = f"KRITISKT: Kunde inte hamta live-priser fran Alpaca: {e}\nStop-loss ej kontrollerat. Manuell atgard kravs."
+        log.error(msg)
+        send_telegram(f"⚠️ {msg}")
+        live_conn.close()
+        return
 
     entry_prices = load_entry_prices(live_conn)
     stop_triggered: list[str] = []
@@ -324,6 +328,7 @@ def run_daily() -> None:
     for ticker, entry in list(entry_prices.items()):
         curr = live_prices.get(ticker)
         if curr is None:
+            log.warning("Inget live-pris for %s — stop-loss ej kontrollerat", ticker)
             continue
         if curr < entry * (1.0 - STOP_LOSS):
             log.warning("Stop-loss triggas för %s (entry=%.2f, nu=%.2f)", ticker, entry, curr)
@@ -373,9 +378,14 @@ def run_daily() -> None:
                 continue
 
             try:
-                curr_price = live_prices.get(ticker) or float(
-                    prices[ticker].iloc[-1] if ticker in prices.columns else 1.0
-                )
+                curr_price = live_prices.get(ticker)
+                if curr_price is None:
+                    if ticker in prices.columns:
+                        curr_price = float(prices[ticker].iloc[-1])
+                        log.warning("Anvander historiskt pris for %s (live-pris saknas): %.2f", ticker, curr_price)
+                    else:
+                        log.error("Inget pris tillgangligt for %s — hoppar over ordern", ticker)
+                        continue
                 qty  = abs(delta) / curr_price
                 side = "buy" if delta > 0 else "sell"
                 api.place_order(ticker, qty, side)
