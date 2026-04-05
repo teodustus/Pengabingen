@@ -112,6 +112,10 @@ def update_universe(
     for ticker in tickers:
         if ticker in existing:
             last = existing[ticker]
+            today = datetime.today().strftime("%Y-%m-%d")
+            if last >= today:
+                log.info("%-12s %s — redan uppdaterad idag", "hoppar over", ticker)
+                continue
             next_day = (datetime.strptime(last, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
             df = fetch_ticker(ticker, start=next_day)
             label = "uppdaterar"

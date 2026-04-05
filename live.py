@@ -114,7 +114,7 @@ def _get_cash(conn: sqlite3.Connection) -> float:
             (PAPER_INITIAL_CAPITAL,),
         )
         conn.commit()
-        log.info("Nytt paper trading-konto initierat med $%,.0f", PAPER_INITIAL_CAPITAL)
+        log.info("Nytt paper trading-konto initierat med $%.0f", PAPER_INITIAL_CAPITAL)
         return PAPER_INITIAL_CAPITAL
     return row[0]
 
