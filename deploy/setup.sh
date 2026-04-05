@@ -43,7 +43,17 @@ echo "=== [4/6] Python virtualenv ==="
 cd "$APP_DIR"
 sudo -u "$APP_USER" python3 -m venv .venv
 sudo -u "$APP_USER" .venv/bin/pip install --upgrade pip -q
-sudo -u "$APP_USER" .venv/bin/pip install -q yfinance pandas numpy requests
+sudo -u "$APP_USER" .venv/bin/pip install -q -r requirements.txt
+
+# Verifiera att alla paket installerades korrekt
+sudo -u "$APP_USER" .venv/bin/python3 -c "
+import yfinance, pandas, numpy, requests
+print('  yfinance', yfinance.__version__)
+print('  pandas  ', pandas.__version__)
+print('  numpy   ', numpy.__version__)
+print('  requests', requests.__version__)
+print('Alla paket OK')
+"
 
 echo "=== [5/6] Skapa kataloger och miljöfil ==="
 sudo -u "$APP_USER" mkdir -p "$APP_DIR/logs"
@@ -66,15 +76,15 @@ ENVEOF
 fi
 
 echo "=== [6/6] Installera cron-jobb ==="
-# 16:05 UTC = 18:05 CET (vintertid) / 17:05 CET (sommartid)
-# 5 minuter efter US-börsen stänger (16:00 ET), ger yfinance tid att uppdatera
-CRON_LINE="5 16 * * 1-5 cd $APP_DIR && set -a && source .env && set +a && .venv/bin/python live.py >> logs/live.log 2>&1"
+# US-börsen stänger 16:00 ET = 21:00 UTC (vintertid EST) / 20:00 UTC (sommartid EDT)
+# Vi kör 21:10 UTC — täcker båda DST-lägena och ger yfinance tid att uppdatera
+CRON_LINE="10 21 * * 1-5 cd $APP_DIR && set -a && source .env && set +a && .venv/bin/python live.py >> logs/live.log 2>&1"
 
 if sudo -u "$APP_USER" crontab -l 2>/dev/null | grep -qF "live.py"; then
     echo "Cron-jobb finns redan — uppdaterar inte"
 else
     (sudo -u "$APP_USER" crontab -l 2>/dev/null; echo "$CRON_LINE") | sudo -u "$APP_USER" crontab -
-    echo "Cron-jobb installerat: 16:05 UTC vardagar"
+    echo "Cron-jobb installerat: 21:10 UTC vardagar (23:10 CET / 22:10 CEST)"
 fi
 
 echo ""

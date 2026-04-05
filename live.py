@@ -2,9 +2,10 @@
 # Steg 6: Paper/Live trading-koppling
 # Dual Momentum Trading System
 #
-# Installera: pip install alpaca-py python-telegram-bot
+# Installera: pip install -r requirements.txt
+#   (yfinance, pandas, numpy, requests — inga extra SDK:er behövs)
 #
-# Miljövariabler som krävs:
+# Miljövariabler som krävs (lägg i .env-filen):
 #   ALPACA_API_KEY        — Alpaca API-nyckel
 #   ALPACA_API_SECRET     — Alpaca API-hemlighet
 #   ALPACA_BASE_URL       — https://paper-api.alpaca.markets (paper)
@@ -12,8 +13,9 @@
 #   TELEGRAM_BOT_TOKEN    — Bot-token från @BotFather
 #   TELEGRAM_CHAT_ID      — Chat-ID att skicka meddelanden till
 #
-# Kör dagligen via cron kl 18:00 CET (12:00 ET, efter US-börsen stängt):
-#   0 18 * * 1-5 cd /opt/trading-bot && python live.py >> logs/live.log 2>&1
+# Kör dagligen via cron (se deploy/setup.sh):
+#   10 21 * * 1-5 cd /opt/trading-bot && source .env && .venv/bin/python live.py >> logs/live.log 2>&1
+#   (21:10 UTC = 5 min efter US-börsstängning i båda DST-lägena)
 # ============================================================
 
 import logging
@@ -49,6 +51,24 @@ TG_TOKEN      = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT_ID    = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 LIVE_DB_PATH  = Path("live_state.db")
+
+
+def _validate_env() -> None:
+    """Kontrollerar att nödvändiga miljövariabler är satta. Kastar EnvironmentError annars."""
+    missing = [
+        name for name, val in [
+            ("ALPACA_API_KEY",    ALPACA_KEY),
+            ("ALPACA_API_SECRET", ALPACA_SECRET),
+            ("TELEGRAM_BOT_TOKEN", TG_TOKEN),
+            ("TELEGRAM_CHAT_ID",  TG_CHAT_ID),
+        ]
+        if not val
+    ]
+    if missing:
+        raise EnvironmentError(
+            f"Saknade miljövariabler: {', '.join(missing)}\n"
+            "Fyll i .env-filen och kör igen."
+        )
 
 
 # ── TELEGRAM ──────────────────────────────────────────────────
@@ -294,6 +314,7 @@ def run_daily() -> None:
       3. Om rebalanseringsdag: beräkna ny portfölj och exekvera affärer
       4. Logga P&L och skicka Telegram-rapport
     """
+    _validate_env()
     log.info("=== Startar daglig körning %s ===", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
 
     # 1. Uppdatera marknadsdata (yfinance — inkluderar VIX)

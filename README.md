@@ -76,8 +76,8 @@ Ett automatiserat handelssystem som använder **dual momentum** för att handla 
 
 ---
 
-### 🔲 Steg 2: Momentumrankning
-**Fil:** `momentum.py` (ej byggd än)
+### ✅ Steg 2: Momentumrankning — KLAR
+**Fil:** `momentum.py`
 
 - Beräkna 3-, 6-, 12-månaders avkastning per aktie
 - Vägt genomsnitt → sammansatt momentum-score
@@ -86,8 +86,8 @@ Ett automatiserat handelssystem som använder **dual momentum** för att handla 
 
 ---
 
-### 🔲 Steg 3: Marknadsfilter
-**Fil:** `market_filter.py` (ej byggd än)
+### ✅ Steg 3: Marknadsfilter — KLAR
+**Fil:** `market_filter.py`
 
 - SPY vs 200-dagars SMA → bool: är marknaden i upptrend?
 - VIX-nivå → positionsstorleksmultiplikator (1.0 eller 0.5)
@@ -95,8 +95,8 @@ Ett automatiserat handelssystem som använder **dual momentum** för att handla 
 
 ---
 
-### 🔲 Steg 4: Portföljlogik
-**Fil:** `portfolio.py` (ej byggd än)
+### ✅ Steg 4: Portföljlogik — KLAR
+**Fil:** `portfolio.py`
 
 - Tar input från steg 2 och 3
 - Bestämmer vilka positioner som ska öppnas/stängas
@@ -105,8 +105,8 @@ Ett automatiserat handelssystem som använder **dual momentum** för att handla 
 
 ---
 
-### 🔲 Steg 5: Backtesting
-**Fil:** `backtest.py` (ej byggd än)
+### ✅ Steg 5: Backtesting — KLAR
+**Fil:** `backtest.py`
 
 - Kör steg 2–4 på historisk data (2010–2024)
 - Uppdelning: träning 2010–2018, validering 2018–2021, test 2021–2024
@@ -122,8 +122,8 @@ Ett automatiserat handelssystem som använder **dual momentum** för att handla 
 
 ---
 
-### 🔲 Steg 6: Paper trading-koppling
-**Fil:** `live.py` (ej byggd än)
+### ✅ Steg 6: Paper trading-koppling — KLAR
+**Fil:** `live.py`
 
 - Kopplar mot Alpaca paper trading API
 - Kör dagligen via cron kl 18:00 CET
