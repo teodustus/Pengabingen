@@ -1,6 +1,7 @@
-# Databaser
+# Databaser (trading_data.db är för stor och kan återskapas)
 *.db
-!live_state.db   # paper trading-state — backas upp via git dagligen
+# Undantag: paper trading-state backas upp via git dagligen
+!live_state.db
 
 # Miljövariabler / secrets
 .env
