@@ -1,21 +1,16 @@
 # ============================================================
-# Steg 6: Paper/Live trading-koppling
+# Steg 6: Lokal Paper Trading-simulator
 # Dual Momentum Trading System
 #
-# Installera: pip install -r requirements.txt
-#   (yfinance, pandas, numpy, requests — inga extra SDK:er behövs)
+# Simulerar ordrar lokalt med yfinance-priser — ingen mäklare krävs.
+# All portföljdata lagras i live_state.db (SQLite).
 #
-# Miljövariabler som krävs (lägg i .env-filen):
-#   ALPACA_API_KEY        — Alpaca API-nyckel
-#   ALPACA_API_SECRET     — Alpaca API-hemlighet
-#   ALPACA_BASE_URL       — https://paper-api.alpaca.markets (paper)
-#                           https://api.alpaca.markets (live)
+# Valfria miljövariabler (för Telegram-notifieringar):
 #   TELEGRAM_BOT_TOKEN    — Bot-token från @BotFather
 #   TELEGRAM_CHAT_ID      — Chat-ID att skicka meddelanden till
 #
 # Kör dagligen via cron (se deploy/setup.sh):
-#   10 21 * * 1-5 cd /opt/trading-bot && source .env && .venv/bin/python live.py >> logs/live.log 2>&1
-#   (21:10 UTC = 5 min efter US-börsstängning i båda DST-lägena)
+#   10 21 * * 1-5 cd /opt/trading-bot && .venv/bin/python live.py >> logs/live.log 2>&1
 # ============================================================
 
 import logging
@@ -27,12 +22,18 @@ from pathlib import Path
 import pandas as pd
 import requests
 
-from config import CASH_TICKER, DB_PATH, MARKET_TICKER, UNIVERSE
+from config import (
+    CASH_TICKER,
+    DB_PATH,
+    MARKET_TICKER,
+    PAPER_INITIAL_CAPITAL,
+    TRANSACTION_COST,
+    UNIVERSE,
+)
 from data_pipeline import init_db, load_prices, load_vix, update_universe
 from market_filter import market_regime
 from momentum import rank_universe
 from portfolio import (
-    MAX_DAILY_LOSS,
     MAX_DRAWDOWN,
     STOP_LOSS,
     TOP_N,
@@ -44,39 +45,18 @@ log = logging.getLogger(__name__)
 
 # ── KONFIGURATION ─────────────────────────────────────────────
 
-ALPACA_KEY    = os.environ.get("ALPACA_API_KEY", "")
-ALPACA_SECRET = os.environ.get("ALPACA_API_SECRET", "")
-ALPACA_URL    = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
-TG_TOKEN      = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TG_CHAT_ID    = os.environ.get("TELEGRAM_CHAT_ID", "")
+TG_TOKEN   = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TG_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-LIVE_DB_PATH  = Path("live_state.db")
+LIVE_DB_PATH = Path("live_state.db")
 
 
-def _validate_env() -> None:
-    """Kontrollerar att nödvändiga miljövariabler är satta. Kastar EnvironmentError annars."""
-    missing = [
-        name for name, val in [
-            ("ALPACA_API_KEY",    ALPACA_KEY),
-            ("ALPACA_API_SECRET", ALPACA_SECRET),
-            ("TELEGRAM_BOT_TOKEN", TG_TOKEN),
-            ("TELEGRAM_CHAT_ID",  TG_CHAT_ID),
-        ]
-        if not val
-    ]
-    if missing:
-        raise EnvironmentError(
-            f"Saknade miljövariabler: {', '.join(missing)}\n"
-            "Fyll i .env-filen och kör igen."
-        )
-
-
-# ── TELEGRAM ──────────────────────────────────────────────────
+# ── TELEGRAM (valfritt) ──────────────────────────────────────
 
 def send_telegram(message: str) -> None:
     """Skickar ett meddelande via Telegram. Loggar fel men kraschar inte."""
     if not TG_TOKEN or not TG_CHAT_ID:
-        log.warning("Telegram ej konfigurerat — hoppar över notifiering")
+        log.info("Telegram ej konfigurerat — hoppar över notifiering")
         return
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     try:
@@ -86,93 +66,21 @@ def send_telegram(message: str) -> None:
         log.error("Telegram-fel: %s", e)
 
 
-# ── ALPACA-KLIENT ─────────────────────────────────────────────
-
-class AlpacaClient:
-    """Tunn wrapper mot Alpaca REST API v2."""
-
-    def __init__(self) -> None:
-        if not ALPACA_KEY or not ALPACA_SECRET:
-            raise EnvironmentError(
-                "ALPACA_API_KEY och ALPACA_API_SECRET måste vara satta som miljövariabler"
-            )
-        self._base = ALPACA_URL.rstrip("/")
-        self._headers = {
-            "APCA-API-KEY-ID":     ALPACA_KEY,
-            "APCA-API-SECRET-KEY": ALPACA_SECRET,
-        }
-
-    def _get(self, path: str) -> dict | list:
-        resp = requests.get(f"{self._base}{path}", headers=self._headers, timeout=15)
-        resp.raise_for_status()
-        return resp.json()
-
-    def _post(self, path: str, body: dict) -> dict:
-        resp = requests.post(f"{self._base}{path}", headers=self._headers, json=body, timeout=15)
-        resp.raise_for_status()
-        return resp.json()
-
-    def account(self) -> dict:
-        return self._get("/v2/account")
-
-    def positions(self) -> list[dict]:
-        return self._get("/v2/positions")
-
-    def portfolio_value(self) -> float:
-        return float(self.account()["portfolio_value"])
-
-    def latest_prices(self, tickers: list[str]) -> dict[str, float]:
-        """Hämtar senaste handelspris för en lista tickers via Alpaca Data API."""
-        symbols = ",".join(tickers)
-        data_base = "https://data.alpaca.markets"
-        resp = requests.get(
-            f"{data_base}/v2/stocks/trades/latest",
-            headers=self._headers,
-            params={"symbols": symbols, "feed": "iex"},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        return {sym: float(info["trade"]["p"]) for sym, info in resp.json()["trades"].items()}
-
-    def place_order(
-        self,
-        ticker: str,
-        qty: float,
-        side: str,           # "buy" eller "sell"
-        order_type: str = "market",
-        time_in_force: str = "day",
-    ) -> dict:
-        """Lägger en order. Returnerar Alpaca order-objekt."""
-        body = {
-            "symbol":        ticker,
-            "qty":           str(round(qty, 6)),
-            "side":          side,
-            "type":          order_type,
-            "time_in_force": time_in_force,
-        }
-        log.info("Order: %s %s %.4f", side.upper(), ticker, qty)
-        return self._post("/v2/orders", body)
-
-    def close_position(self, ticker: str) -> dict:
-        """Stänger hela positionen för en ticker."""
-        resp = requests.delete(
-            f"{self._base}/v2/positions/{ticker}",
-            headers=self._headers,
-            timeout=15,
-        )
-        resp.raise_for_status()
-        return resp.json()
-
-
 # ── LIVE-DATABAS ──────────────────────────────────────────────
 
 def init_live_db(path: Path = LIVE_DB_PATH) -> sqlite3.Connection:
-    """Initierar SQLite-databas för live-tillstånd (entry-priser, P&L, trade-logg)."""
+    """Initierar SQLite-databas för paper trading-tillstånd."""
     conn = sqlite3.connect(path)
     conn.executescript("""
-        CREATE TABLE IF NOT EXISTS entry_prices (
+        CREATE TABLE IF NOT EXISTS account (
+            key   TEXT PRIMARY KEY,
+            value REAL NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS positions (
             ticker      TEXT PRIMARY KEY,
-            entry_price REAL NOT NULL,
+            qty         REAL NOT NULL,
+            avg_price   REAL NOT NULL,
             entry_date  TEXT NOT NULL
         );
 
@@ -183,7 +91,8 @@ def init_live_db(path: Path = LIVE_DB_PATH) -> sqlite3.Connection:
             action   TEXT NOT NULL,
             qty      REAL,
             price    REAL,
-            amount   REAL
+            amount   REAL,
+            cost     REAL DEFAULT 0.0
         );
 
         CREATE TABLE IF NOT EXISTS daily_pnl (
@@ -196,31 +105,52 @@ def init_live_db(path: Path = LIVE_DB_PATH) -> sqlite3.Connection:
     return conn
 
 
-def load_entry_prices(conn: sqlite3.Connection) -> dict[str, float]:
-    rows = conn.execute("SELECT ticker, entry_price FROM entry_prices").fetchall()
-    return {r[0]: r[1] for r in rows}
+def _get_cash(conn: sqlite3.Connection) -> float:
+    """Hämtar kontantsaldo. Initierar med PAPER_INITIAL_CAPITAL om det saknas."""
+    row = conn.execute("SELECT value FROM account WHERE key = 'cash'").fetchone()
+    if row is None:
+        conn.execute(
+            "INSERT INTO account (key, value) VALUES ('cash', ?)",
+            (PAPER_INITIAL_CAPITAL,),
+        )
+        conn.commit()
+        log.info("Nytt paper trading-konto initierat med $%,.0f", PAPER_INITIAL_CAPITAL)
+        return PAPER_INITIAL_CAPITAL
+    return row[0]
 
 
-def save_entry_price(conn: sqlite3.Connection, ticker: str, price: float) -> None:
+def _set_cash(conn: sqlite3.Connection, amount: float) -> None:
+    conn.execute("UPDATE account SET value = ? WHERE key = 'cash'", (amount,))
+    conn.commit()
+
+
+def load_positions(conn: sqlite3.Connection) -> dict[str, dict]:
+    """Returnerar {ticker: {qty, avg_price, entry_date}}."""
+    rows = conn.execute("SELECT ticker, qty, avg_price, entry_date FROM positions").fetchall()
+    return {r[0]: {"qty": r[1], "avg_price": r[2], "entry_date": r[3]} for r in rows}
+
+
+def save_position(conn: sqlite3.Connection, ticker: str, qty: float, avg_price: float) -> None:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     conn.execute(
-        "INSERT OR REPLACE INTO entry_prices (ticker, entry_price, entry_date) VALUES (?, ?, ?)",
-        (ticker, price, today),
+        "INSERT OR REPLACE INTO positions (ticker, qty, avg_price, entry_date) VALUES (?, ?, ?, ?)",
+        (ticker, qty, avg_price, today),
     )
     conn.commit()
 
 
-def remove_entry_price(conn: sqlite3.Connection, ticker: str) -> None:
-    conn.execute("DELETE FROM entry_prices WHERE ticker = ?", (ticker,))
+def remove_position(conn: sqlite3.Connection, ticker: str) -> None:
+    conn.execute("DELETE FROM positions WHERE ticker = ?", (ticker,))
     conn.commit()
 
 
 def log_trade(conn: sqlite3.Connection, ticker: str, action: str,
-              qty: float, price: float, amount: float) -> None:
+              qty: float, price: float, amount: float, cost: float = 0.0) -> None:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     conn.execute(
-        "INSERT INTO live_trades (date, ticker, action, qty, price, amount) VALUES (?, ?, ?, ?, ?, ?)",
-        (today, ticker, action, qty, price, amount),
+        "INSERT INTO live_trades (date, ticker, action, qty, price, amount, cost) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (today, ticker, action, qty, price, amount, cost),
     )
     conn.commit()
 
@@ -238,18 +168,94 @@ def log_daily_pnl(conn: sqlite3.Connection, portfolio_value: float) -> None:
     conn.commit()
 
 
+def portfolio_value(conn: sqlite3.Connection, current_prices: dict[str, float]) -> float:
+    """Beräknar totalt portföljvärde: cash + marknadsvärde på alla positioner."""
+    cash = _get_cash(conn)
+    positions = load_positions(conn)
+    market_val = sum(
+        pos["qty"] * current_prices.get(ticker, pos["avg_price"])
+        for ticker, pos in positions.items()
+    )
+    return cash + market_val
+
+
+# ── SIMULERADE ORDRAR ────────────────────────────────────────
+
+def sim_buy(conn: sqlite3.Connection, ticker: str, amount: float, price: float) -> float:
+    """
+    Simulerar köp. Returnerar antal köpta aktier.
+    Drar av transaktionskostnad från beloppet.
+    """
+    cost = amount * TRANSACTION_COST
+    net_amount = amount - cost
+    qty = net_amount / price
+
+    # Uppdatera kassa
+    cash = _get_cash(conn)
+    _set_cash(conn, cash - amount)
+
+    # Uppdatera position (viktat genomsnitt om vi redan har)
+    positions = load_positions(conn)
+    if ticker in positions:
+        old = positions[ticker]
+        new_qty = old["qty"] + qty
+        new_avg = (old["qty"] * old["avg_price"] + qty * price) / new_qty
+        save_position(conn, ticker, new_qty, new_avg)
+    else:
+        save_position(conn, ticker, qty, price)
+
+    log_trade(conn, ticker, "KOP", qty, price, amount, cost)
+    return qty
+
+
+def sim_sell(conn: sqlite3.Connection, ticker: str, qty: float, price: float) -> float:
+    """
+    Simulerar sälj. Returnerar nettobelopp (efter kostnad).
+    """
+    gross = qty * price
+    cost = gross * TRANSACTION_COST
+    net = gross - cost
+
+    # Uppdatera kassa
+    cash = _get_cash(conn)
+    _set_cash(conn, cash + net)
+
+    # Uppdatera eller ta bort position
+    positions = load_positions(conn)
+    if ticker in positions:
+        old_qty = positions[ticker]["qty"]
+        remaining = old_qty - qty
+        if remaining < 0.001:  # Avrundning — stäng helt
+            remove_position(conn, ticker)
+        else:
+            save_position(conn, ticker, remaining, positions[ticker]["avg_price"])
+
+    log_trade(conn, ticker, "SALJ", qty, price, gross, cost)
+    return net
+
+
+def sim_close(conn: sqlite3.Connection, ticker: str, price: float, action: str = "SALJ") -> float:
+    """Stänger hela positionen för en ticker."""
+    positions = load_positions(conn)
+    if ticker not in positions:
+        return 0.0
+    qty = positions[ticker]["qty"]
+    gross = qty * price
+    cost = gross * TRANSACTION_COST
+    net = gross - cost
+
+    cash = _get_cash(conn)
+    _set_cash(conn, cash + net)
+    remove_position(conn, ticker)
+    log_trade(conn, ticker, action, qty, price, gross, cost)
+    return net
+
+
 # ── HJÄLPFUNKTIONER ───────────────────────────────────────────
 
 def is_rebalance_day() -> bool:
-    """
-    Returnerar True om idag är sista handelsdagen i månaden.
-
-    Approximation: om morgondagen tillhör en annan månad är idag sista dagen.
-    Alpaca stänger kl 16:00 ET. Vi kör kl 18:00 CET = 12:00 ET, så börsen
-    är öppen — men vi handlar vid stängning (market orders, time_in_force=day).
-    """
+    """Returnerar True om idag är sista handelsdagen i månaden."""
     today = pd.Timestamp.now(tz="America/New_York").normalize()
-    # Flytta en dag framåt med USFederalHolidayCalendar om tillgängligt
     try:
         from pandas.tseries.holiday import USFederalHolidayCalendar
         from pandas.tseries.offsets import CustomBusinessDay
@@ -257,15 +263,17 @@ def is_rebalance_day() -> bool:
         next_bd = today + us_bd
     except Exception:
         next_bd = today + pd.offsets.BDay(1)
-
     return today.month != next_bd.month
 
 
+def get_latest_prices(prices: pd.DataFrame) -> dict[str, float]:
+    """Hämtar senaste stängningskurs per ticker från databasdata."""
+    latest = prices.iloc[-1]
+    return {ticker: float(latest[ticker]) for ticker in prices.columns if pd.notna(latest[ticker])}
+
+
 def compute_target(prices: pd.DataFrame, vix: pd.Series) -> pd.Series:
-    """
-    Beräknar målvikter för idag baserat på aktuell data.
-    Returnerar en Serie: ticker → vikt.
-    """
+    """Beräknar målvikter för idag. Returnerar Serie: ticker -> vikt."""
     ranks  = rank_universe(prices).shift(1)
     regime = market_regime(prices, vix).shift(1)
     w = target_weights(ranks, regime, top_n=TOP_N)
@@ -275,29 +283,36 @@ def compute_target(prices: pd.DataFrame, vix: pd.Series) -> pd.Series:
 
 
 def format_pnl_message(
-    portfolio_value: float,
+    pv: float,
     daily_ret: float | None,
-    positions: list[dict],
+    positions: dict[str, dict],
+    current_prices: dict[str, float],
     rebalanced: bool,
     trade_summary: list[str],
+    stop_triggered: list[str],
 ) -> str:
-    """Formaterar daglig P&L-rapport för Telegram."""
+    """Formaterar daglig P&L-rapport."""
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    lines = [f"📊 Trading Bot — {date_str}"]
-    lines.append(f"Portföljvärde: ${portfolio_value:,.0f}")
+    lines = [f"[PAPER] Trading Bot — {date_str}"]
+    lines.append(f"Portfoljvarde: ${pv:,.0f}")
 
     if daily_ret is not None:
         sign = "+" if daily_ret >= 0 else ""
         lines.append(f"Daglig P&L: {sign}{daily_ret*100:.2f}%")
 
+    if stop_triggered:
+        lines.append(f"\nStop-loss: {', '.join(stop_triggered)}")
+
     if rebalanced:
-        lines.append("\n🔄 Rebalansering utförd:")
+        lines.append("\nRebalansering utford:")
         lines.extend(f"  {t}" for t in trade_summary)
 
     if positions:
-        lines.append("\n📦 Positioner:")
-        for p in positions:
-            lines.append(f"  {p['symbol']:<8} {float(p['unrealized_plpc'])*100:+.1f}%")
+        lines.append("\nPositioner:")
+        for ticker, pos in sorted(positions.items()):
+            price = current_prices.get(ticker, pos["avg_price"])
+            pnl_pct = (price / pos["avg_price"] - 1.0) * 100
+            lines.append(f"  {ticker:<8} {pos['qty']:.1f} st  {pnl_pct:+.1f}%")
 
     return "\n".join(lines)
 
@@ -310,83 +325,71 @@ def run_daily() -> None:
 
     Flöde:
       1. Uppdatera marknadsdata (yfinance)
-      2. Kontrollera stop-losses mot aktuella priser
-      3. Om rebalanseringsdag: beräkna ny portfölj och exekvera affärer
-      4. Logga P&L och skicka Telegram-rapport
+      2. Beräkna portföljvärde med senaste priser
+      3. Kontrollera stop-losses
+      4. Drawdown-kontroll
+      5. Om rebalanseringsdag: beräkna ny portfölj och simulera affärer
+      6. Logga P&L och skicka rapport
     """
-    _validate_env()
-    log.info("=== Startar daglig körning %s ===", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+    log.info("=== Startar daglig korning %s ===", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
 
-    # 1. Uppdatera marknadsdata (yfinance — inkluderar VIX)
+    # 1. Uppdatera marknadsdata
     data_conn = init_db()
     update_universe(data_conn)
     prices = load_prices(data_conn)
     vix    = load_vix(data_conn)
     data_conn.close()
 
-    # Kontrollera att VIX-data inte är för gammal (>2 handelsdagar)
+    # Kontrollera VIX-ålder
     vix_age_days = (pd.Timestamp.now() - vix.index[-1]).days
     if vix_age_days > 3:
-        msg = f"VIX-data ar {vix_age_days} dagar gammal — position sizing kan vara felaktig"
+        msg = f"VIX-data ar {vix_age_days} dagar gammal"
         log.warning(msg)
-        send_telegram(f"⚠️ {msg}")
+        send_telegram(f"Varning: {msg}")
 
-    # 2. Initialisera Alpaca och live-databas
-    api       = AlpacaClient()
+    # 2. Hämta senaste priser och beräkna portföljvärde
     live_conn = init_live_db()
-    pv        = api.portfolio_value()
+    current_prices = get_latest_prices(prices)
 
-    log_daily_pnl(live_conn, pv)
-
-    # 3. Hämta aktuella priser och kontrollera stop-losses
-    try:
-        live_prices = api.latest_prices(UNIVERSE)
-    except Exception as e:
-        # Om vi inte kan hämta live-priser kan vi inte kontrollera stop-losses.
-        # Avbryt körningen och skicka varning — bättre att göra ingenting än fel.
-        msg = f"KRITISKT: Kunde inte hamta live-priser fran Alpaca: {e}\nStop-loss ej kontrollerat. Manuell atgard kravs."
+    if not current_prices:
+        msg = "Inga priser tillgangliga — avbryter"
         log.error(msg)
-        send_telegram(f"⚠️ {msg}")
+        send_telegram(msg)
         live_conn.close()
         return
 
-    entry_prices = load_entry_prices(live_conn)
+    pv = portfolio_value(live_conn, current_prices)
+    log_daily_pnl(live_conn, pv)
+
+    # 3. Kontrollera stop-losses
+    positions = load_positions(live_conn)
     stop_triggered: list[str] = []
 
-    for ticker, entry in list(entry_prices.items()):
-        curr = live_prices.get(ticker)
-        if curr is None:
-            log.warning("Inget live-pris for %s — stop-loss ej kontrollerat", ticker)
+    for ticker, pos in list(positions.items()):
+        price = current_prices.get(ticker)
+        if price is None:
+            log.warning("Inget pris for %s — stop-loss ej kontrollerat", ticker)
             continue
-        if curr < entry * (1.0 - STOP_LOSS):
-            log.warning("Stop-loss triggas för %s (entry=%.2f, nu=%.2f)", ticker, entry, curr)
-            try:
-                # Hämta aktuell positionsstorlek från Alpaca före stängning
-                positions_now = {p["symbol"]: p for p in api.positions()}
-                pos = positions_now.get(ticker)
-                qty = float(pos["qty"]) if pos else 0.0
-                market_val = float(pos["market_value"]) if pos else 0.0
-
-                api.close_position(ticker)
-                remove_entry_price(live_conn, ticker)
-                log_trade(live_conn, ticker, "STOP", qty, curr, market_val)
-                stop_triggered.append(ticker)
-            except Exception as e:
-                log.error("Fel vid stop-loss för %s: %s", ticker, e)
+        if price < pos["avg_price"] * (1.0 - STOP_LOSS):
+            log.warning(
+                "Stop-loss for %s (entry=%.2f, nu=%.2f, -%s%%)",
+                ticker, pos["avg_price"], price, f"{STOP_LOSS*100:.0f}",
+            )
+            sim_close(live_conn, ticker, price, action="STOP")
+            stop_triggered.append(ticker)
 
     # 4. Drawdown-kontroll
     pnl_rows = pd.read_sql(
-        "SELECT date, portfolio_value FROM daily_pnl ORDER BY date",
-        live_conn,
+        "SELECT date, portfolio_value FROM daily_pnl ORDER BY date", live_conn,
     )
     if not pnl_rows.empty:
         pnl_series = pnl_rows.set_index("date")["portfolio_value"]
         pnl_series.index = pd.to_datetime(pnl_series.index)
         if drawdown_exceeded(pnl_series).iloc[-1]:
             msg = (
-                f"⚠️ MAX DRAWDOWN NÅDD — systemet pausat.\n"
-                f"Portföljvärde: ${pv:,.0f}\n"
-                f"Manuell omstart krävs."
+                f"MAX DRAWDOWN NADD — systemet pausat.\n"
+                f"Portfoljvarde: ${pv:,.0f}\n"
+                f"Manuell omstart kravs."
             )
             log.warning(msg)
             send_telegram(msg)
@@ -395,70 +398,76 @@ def run_daily() -> None:
 
     # 5. Rebalansering (om det är dags)
     rebalanced    = False
-    trade_summary = []
+    trade_summary: list[str] = []
 
     if is_rebalance_day():
-        log.info("Rebalanseringsdag — beräknar ny portfölj")
+        log.info("Rebalanseringsdag — beraknar ny portfolj")
         target = compute_target(prices, vix)
-        current_positions = {p["symbol"]: float(p["market_value"]) for p in api.positions()}
 
-        for ticker, weight in target.items():
-            desired_value = weight * pv
-            current_value = current_positions.get(ticker, 0.0)
+        # Uppdatera portföljvärde efter eventuella stop-loss-sälj
+        pv = portfolio_value(live_conn, current_prices)
+        positions = load_positions(live_conn)
+        current_holdings = {
+            t: p["qty"] * current_prices.get(t, p["avg_price"])
+            for t, p in positions.items()
+        }
+
+        # Sälj först (frigör kapital)
+        for ticker in list(positions.keys()):
+            desired_weight = target.get(ticker, 0.0)
+            desired_value  = desired_weight * pv
+            current_value  = current_holdings.get(ticker, 0.0)
             delta = desired_value - current_value
 
-            if abs(delta) < 50:   # Ignorera affärer under $50
+            if delta < -50:  # Sälj
+                price = current_prices.get(ticker)
+                if price is None:
+                    continue
+                sell_value = abs(delta)
+                sell_qty   = min(sell_value / price, positions[ticker]["qty"])
+                sim_sell(live_conn, ticker, sell_qty, price)
+                trade_summary.append(f"SALJ {ticker} ${abs(delta):,.0f}")
+
+        # Köp sedan
+        for ticker, weight in target.items():
+            if ticker == CASH_TICKER or weight <= 0:
                 continue
+            desired_value = weight * pv
+            positions = load_positions(live_conn)
+            current_value = 0.0
+            if ticker in positions:
+                current_value = positions[ticker]["qty"] * current_prices.get(ticker, positions[ticker]["avg_price"])
+            delta = desired_value - current_value
 
-            try:
-                curr_price = live_prices.get(ticker)
-                if curr_price is None:
-                    if ticker in prices.columns:
-                        curr_price = float(prices[ticker].iloc[-1])
-                        log.warning("Anvander historiskt pris for %s (live-pris saknas): %.2f", ticker, curr_price)
-                    else:
-                        log.error("Inget pris tillgangligt for %s — hoppar over ordern", ticker)
-                        continue
-                qty  = abs(delta) / curr_price
-                side = "buy" if delta > 0 else "sell"
-                api.place_order(ticker, qty, side)
-
-                action = "KOP" if delta > 0 else "SALJ"
-                log_trade(live_conn, ticker, action, qty, curr_price, abs(delta))
-                trade_summary.append(f"{action} {ticker} ${abs(delta):,.0f}")
-
-                if side == "buy":
-                    save_entry_price(live_conn, ticker, curr_price)
-                elif desired_value == 0:
-                    remove_entry_price(live_conn, ticker)
-
-            except Exception as e:
-                log.error("Orderfel för %s: %s", ticker, e)
+            if delta > 50:  # Köp
+                price = current_prices.get(ticker)
+                if price is None:
+                    log.warning("Inget pris for %s — hoppar over kop", ticker)
+                    continue
+                cash = _get_cash(live_conn)
+                buy_amount = min(delta, cash)
+                if buy_amount < 50:
+                    continue
+                sim_buy(live_conn, ticker, buy_amount, price)
+                trade_summary.append(f"KOP {ticker} ${buy_amount:,.0f}")
 
         rebalanced = bool(trade_summary)
 
-    # 6. Hämta uppdaterade positioner och skicka rapport
-    try:
-        positions = api.positions()
-        pv = api.portfolio_value()
-    except Exception as e:
-        log.error("Kunde inte hämta slutportfölj: %s", e)
-        positions = []
+    # 6. Slutrapport
+    pv = portfolio_value(live_conn, current_prices)
+    positions = load_positions(live_conn)
 
     prev_pnl = live_conn.execute(
         "SELECT portfolio_value FROM daily_pnl ORDER BY date DESC LIMIT 2"
     ).fetchall()
     daily_ret = (prev_pnl[0][0] / prev_pnl[1][0] - 1.0) if len(prev_pnl) >= 2 else None
 
-    msg = format_pnl_message(pv, daily_ret, positions, rebalanced, trade_summary)
+    msg = format_pnl_message(pv, daily_ret, positions, current_prices, rebalanced, trade_summary, stop_triggered)
     log.info(msg)
     send_telegram(msg)
 
-    if stop_triggered:
-        send_telegram(f"🛑 Stop-loss triggas for: {', '.join(stop_triggered)}")
-
     live_conn.close()
-    log.info("=== Daglig körning klar ===")
+    log.info("=== Daglig korning klar ===")
 
 
 if __name__ == "__main__":

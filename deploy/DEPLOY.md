@@ -26,12 +26,14 @@ Scriptet:
 2. Skapar användare `trader` (kör aldrig boten som root)
 3. Klonar repot till `/opt/trading-bot`
 4. Sätter upp virtualenv + beroenden
-5. Skapar `.env`-mall för API-nycklar
-6. Installerar cron-jobb (16:05 UTC vardagar)
+5. Skapar `.env`-mall för Telegram (valfritt)
+6. Installerar cron-jobb (21:10 UTC vardagar)
 
-## API-nycklar
+## Telegram (valfritt)
 
-Fyll i `/opt/trading-bot/.env`:
+Systemet fungerar utan Telegram — all data loggas till `live_state.db` och `logs/live.log`.
+
+Om du vill ha dagliga rapporter, fyll i `/opt/trading-bot/.env`:
 
 ```bash
 nano /opt/trading-bot/.env
@@ -39,9 +41,6 @@ nano /opt/trading-bot/.env
 
 | Variabel | Var du hämtar den |
 |----------|-------------------|
-| `ALPACA_API_KEY` | [app.alpaca.markets](https://app.alpaca.markets) → Paper Trading → API Keys |
-| `ALPACA_API_SECRET` | Samma ställe |
-| `ALPACA_BASE_URL` | `https://paper-api.alpaca.markets` (paper) |
 | `TELEGRAM_BOT_TOKEN` | Skapa bot via [@BotFather](https://t.me/BotFather) i Telegram |
 | `TELEGRAM_CHAT_ID` | Skicka `/start` till boten, kör: `curl https://api.telegram.org/bot<TOKEN>/getUpdates` |
 
@@ -62,7 +61,7 @@ python data_pipeline.py
 # Kör backtest
 python backtest.py
 
-# Testkör live.py manuellt (skickar Telegram-rapport)
+# Testkör live.py manuellt (simulerar paper trading)
 python live.py
 ```
 
@@ -70,10 +69,10 @@ python live.py
 
 | Tid (UTC) | Tid (CET) | Händelse |
 |-----------|-----------|----------|
-| 20:00 | 22:00 | US-börsen stänger |
-| 16:05 | 18:05 | Cron kör `live.py` |
+| 21:00 | 23:00 | US-börsen stänger (vintertid) |
+| 21:10 | 23:10 | Cron kör `live.py` |
 
-**OBS:** 16:05 UTC = efter börsens stängning (16:00 ET). yfinance-data uppdateras
+**OBS:** 21:10 UTC = 10 min efter börsens stängning. yfinance-data uppdateras
 normalt inom minuter. Om data saknas loggas en varning men systemet avbryter inte.
 
 ## Uppdatering
@@ -122,8 +121,6 @@ sqlite3 live_state.db "SELECT * FROM live_trades ORDER BY date DESC LIMIT 10;"
 | Post | Kostnad/mån |
 |------|-------------|
 | Hetzner CAX11 | ~3.85 EUR |
-| Alpaca Paper | 0 |
-| Alpaca Live | 0 (provisionsritt) |
 | Telegram Bot | 0 |
 | yfinance | 0 |
 | **Totalt** | **~3.85 EUR/mån** |

@@ -61,18 +61,13 @@ sudo -u "$APP_USER" mkdir -p "$APP_DIR/logs"
 # Skapa .env-mall om den inte redan finns
 if [ ! -f "$APP_DIR/.env" ]; then
     cat > "$APP_DIR/.env" << 'ENVEOF'
-# Alpaca API (paper trading)
-ALPACA_API_KEY=
-ALPACA_API_SECRET=
-ALPACA_BASE_URL=https://paper-api.alpaca.markets
-
-# Telegram-notifieringar
+# Telegram-notifieringar (valfritt — systemet fungerar utan)
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 ENVEOF
     chown "$APP_USER":"$APP_USER" "$APP_DIR/.env"
     chmod 600 "$APP_DIR/.env"
-    echo "VIKTIGT: Fyll i $APP_DIR/.env med dina API-nycklar!"
+    echo "Valfritt: Fyll i Telegram-nycklar i $APP_DIR/.env"
 fi
 
 echo "=== [6/6] Installera cron-jobb ==="

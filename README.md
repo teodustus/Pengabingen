@@ -122,13 +122,13 @@ Ett automatiserat handelssystem som använder **dual momentum** för att handla 
 
 ---
 
-### ✅ Steg 6: Paper trading-koppling — KLAR
+### ✅ Steg 6: Lokal paper trading — KLAR
 **Fil:** `live.py`
 
-- Kopplar mot Alpaca paper trading API
-- Kör dagligen via cron kl 18:00 CET
-- Skickar orderbekräftelser och daglig P&L via Telegram
-- Loggar allt till SQLite
+- Simulerar ordrar lokalt med yfinance-priser — ingen mäklare krävs
+- Kör dagligen via cron kl 23:10 CET (21:10 UTC)
+- Valfria Telegram-rapporter (fungerar utan)
+- Loggar positioner, trades och P&L till SQLite (`live_state.db`)
 
 ---
 
@@ -140,8 +140,7 @@ Python 3.11+
 ├── pandas            # Datahantering
 ├── numpy             # Beräkningar
 ├── sqlite3           # Lokal databas (inbyggd)
-├── alpaca-trade-api  # Broker API (steg 6)
-└── python-telegram-bot # Notifieringar (steg 6)
+└── requests          # HTTP (Telegram-notifieringar, valfritt)
 
 Hosting: Hetzner VPS, Ubuntu 24
 Schemaläggning: cron

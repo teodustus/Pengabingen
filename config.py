@@ -15,3 +15,7 @@ CASH_TICKER   = "BIL"   # Kortränta ETF — vår "cash"-position
 VIX_TICKER    = "^VIX"  # Volatilitetsindex för marknadsfilter
 
 DB_PATH = Path("trading_data.db")
+
+# Paper trading
+PAPER_INITIAL_CAPITAL = 100_000.0   # Startkapital i USD
+TRANSACTION_COST      = 0.0015      # 0.15% per affär (courtage + slippage)
