@@ -82,7 +82,12 @@ def save_to_db(conn: sqlite3.Connection, ticker: str, df: pd.DataFrame) -> int:
         return 0
 
     rows = df.reset_index()[["ticker", "date", "open", "high", "low", "close", "volume", "adj_close"]]
-    rows.to_sql("prices", conn, if_exists="append", index=False, method="ignore")
+    conn.executemany(
+        "INSERT OR IGNORE INTO prices "
+        "(ticker, date, open, high, low, close, volume, adj_close) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        rows.itertuples(index=False, name=None),
+    )
 
     conn.execute(
         "INSERT OR REPLACE INTO downloads (ticker, last_update) VALUES (?, ?)",
