@@ -296,12 +296,19 @@ def run_daily() -> None:
     """
     log.info("=== Startar daglig körning %s ===", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
 
-    # 1. Uppdatera marknadsdata
+    # 1. Uppdatera marknadsdata (yfinance — inkluderar VIX)
     data_conn = init_db()
     update_universe(data_conn)
     prices = load_prices(data_conn)
     vix    = load_vix(data_conn)
     data_conn.close()
+
+    # Kontrollera att VIX-data inte är för gammal (>2 handelsdagar)
+    vix_age_days = (pd.Timestamp.now() - vix.index[-1]).days
+    if vix_age_days > 3:
+        msg = f"VIX-data ar {vix_age_days} dagar gammal — position sizing kan vara felaktig"
+        log.warning(msg)
+        send_telegram(f"⚠️ {msg}")
 
     # 2. Initialisera Alpaca och live-databas
     api       = AlpacaClient()
@@ -333,10 +340,15 @@ def run_daily() -> None:
         if curr < entry * (1.0 - STOP_LOSS):
             log.warning("Stop-loss triggas för %s (entry=%.2f, nu=%.2f)", ticker, entry, curr)
             try:
+                # Hämta aktuell positionsstorlek från Alpaca före stängning
+                positions_now = {p["symbol"]: p for p in api.positions()}
+                pos = positions_now.get(ticker)
+                qty = float(pos["qty"]) if pos else 0.0
+                market_val = float(pos["market_value"]) if pos else 0.0
+
                 api.close_position(ticker)
                 remove_entry_price(live_conn, ticker)
-                amount = curr  # approximation utan antal aktier
-                log_trade(live_conn, ticker, "STOP", 0, curr, 0)
+                log_trade(live_conn, ticker, "STOP", qty, curr, market_val)
                 stop_triggered.append(ticker)
             except Exception as e:
                 log.error("Fel vid stop-loss för %s: %s", ticker, e)

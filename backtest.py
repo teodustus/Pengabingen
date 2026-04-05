@@ -225,14 +225,9 @@ def performance_metrics(
 
     ann_vol = daily_ret.std() * np.sqrt(252)
 
-    # Riskfri ränta: annualiserad BIL-avkastning under perioden (proxy för T-bills).
-    # Kritiskt för korrekt Sharpe — utan detta överskattas Sharpe med 0.3–0.5 enheter
+    # risk_free_rate skickas in av anroparen (typiskt BIL CAGR för perioden).
+    # Kritiskt: utan detta överskattas Sharpe med 0.3–0.5 enheter
     # när räntor är 4–5% (2022–2024).
-    bil_daily = benchmark_prices.pct_change().dropna()  # benchmark_prices är SPY här
-    # Fallback: om BIL-data skickas in som benchmark används den direkt;
-    # annars approximerar vi med 0% (konservativt).
-    risk_free_rate = 0.0  # sätts av anroparen via risk_free_rate-parametern
-
     sharpe = (cagr - risk_free_rate) / ann_vol if ann_vol > 0 else 0.0
 
     rolling_max = portfolio_values.cummax()
