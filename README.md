@@ -10,7 +10,7 @@ Ett automatiserat handelssystem som använder **dual momentum** för att handla 
 
 | Område | Beslut | Motivering |
 |--------|--------|------------|
-| Handelsstil | Swing trading, 3–14 dagar per position | Rimlig konkurrens för enskild utvecklare, latens spelar ingen roll |
+| Handelsstil | Månadsvis rebalansering, hållperiod typiskt 1–6 månader | Dual momentum är en månadsbaserad strategi — akademisk evidens bygger på månadsdata. Låg omsättning ger låga transaktionskostnader (~0.8%/år vs ~10%+ för daglig handel) |
 | Strategi | Dual momentum (absolut + relativt) | Beprövad akademisk grund, tydlig ekonomisk logik |
 | Marknad | Amerikanska aktier via Alpaca API | Bäst API-stöd och datatillgång |
 | Universe | ~50 S&P 100-aktier + SPY + BIL | Likvida, pålitlig data, hanterbart antal |
@@ -76,8 +76,8 @@ Ett automatiserat handelssystem som använder **dual momentum** för att handla 
 
 ---
 
-### 🔲 Steg 2: Momentumrankning
-**Fil:** `momentum.py` (ej byggd än)
+### ✅ Steg 2: Momentumrankning — KLAR
+**Fil:** `momentum.py`
 
 - Beräkna 3-, 6-, 12-månaders avkastning per aktie
 - Vägt genomsnitt → sammansatt momentum-score
@@ -86,8 +86,8 @@ Ett automatiserat handelssystem som använder **dual momentum** för att handla 
 
 ---
 
-### 🔲 Steg 3: Marknadsfilter
-**Fil:** `market_filter.py` (ej byggd än)
+### ✅ Steg 3: Marknadsfilter — KLAR
+**Fil:** `market_filter.py`
 
 - SPY vs 200-dagars SMA → bool: är marknaden i upptrend?
 - VIX-nivå → positionsstorleksmultiplikator (1.0 eller 0.5)
@@ -95,8 +95,8 @@ Ett automatiserat handelssystem som använder **dual momentum** för att handla 
 
 ---
 
-### 🔲 Steg 4: Portföljlogik
-**Fil:** `portfolio.py` (ej byggd än)
+### ✅ Steg 4: Portföljlogik — KLAR
+**Fil:** `portfolio.py`
 
 - Tar input från steg 2 och 3
 - Bestämmer vilka positioner som ska öppnas/stängas
@@ -105,8 +105,8 @@ Ett automatiserat handelssystem som använder **dual momentum** för att handla 
 
 ---
 
-### 🔲 Steg 5: Backtesting
-**Fil:** `backtest.py` (ej byggd än)
+### ✅ Steg 5: Backtesting — KLAR
+**Fil:** `backtest.py`
 
 - Kör steg 2–4 på historisk data (2010–2024)
 - Uppdelning: träning 2010–2018, validering 2018–2021, test 2021–2024
@@ -122,8 +122,8 @@ Ett automatiserat handelssystem som använder **dual momentum** för att handla 
 
 ---
 
-### 🔲 Steg 6: Paper trading-koppling
-**Fil:** `live.py` (ej byggd än)
+### ✅ Steg 6: Paper trading-koppling — KLAR
+**Fil:** `live.py`
 
 - Kopplar mot Alpaca paper trading API
 - Kör dagligen via cron kl 18:00 CET
@@ -171,9 +171,11 @@ trading-bot/
 
 **Använd alltid kronologisk datadelning** — aldrig slumpmässig. Signaler appliceras dag+1 (inte samma dag som beräkning) för att undvika look-ahead bias.
 
-**Survivorship bias** — yfinance innehåller bara aktier som fortfarande existerar. Var medveten om att backtests därför är något för optimistiska.
+**Survivorship bias** — yfinance innehåller bara aktier som fortfarande existerar. Backtests är strukturellt för optimistiska av den anledningen. Resultaten bör tolkas konservativt — dra av ~1–2% CAGR mentalt.
 
-**Transaktionskostnader** — räkna alltid med 0.1% courtage + 0.05% slippage per affär (köp och sälj). En strategi som inte är lönsam efter dessa kostnader är inte lönsam i verkligheten.
+**Transaktionskostnader** — systemet räknar med 0.15% per affär (köp eller sälj). Månadsvis rebalansering ger ~0.8%/år i kostnader, vilket är hanterbart. Ökar du rebalanseringsfrekvensen förstörs fördelen snabbt.
+
+**Sharpe-ratio** — beräknas med BIL-avkastning som riskfri ränta. Under perioder med hög ränta (2022–2024: ~4–5%) är det avgörande att inte använda 0% som proxy — det överskattar Sharpe med 0.3–0.5 enheter.
 
 **Blankning är fas 2** — lägg inte till det förrän fas 1 är validerad med live-data. Blankningskostnader (lånavgifter) är svåra att modellera korrekt i backtesting.
 

@@ -1,0 +1,17 @@
+# Databaser
+*.db
+
+# Miljövariabler / secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Loggar
+logs/
+
+# IDE
+.vscode/
+.idea/
