@@ -9,7 +9,7 @@ __pycache__/
 *.pyc
 .venv/
 
-# Loggar
+# Loggar (lokala, pushas ej)
 logs/
 
 # IDE

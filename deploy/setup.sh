@@ -57,6 +57,7 @@ print('Alla paket OK')
 
 echo "=== [5/6] Skapa kataloger och miljöfil ==="
 sudo -u "$APP_USER" mkdir -p "$APP_DIR/logs"
+sudo -u "$APP_USER" mkdir -p "$APP_DIR/reports"
 
 # Skapa .env-mall om den inte redan finns
 if [ ! -f "$APP_DIR/.env" ]; then
@@ -73,13 +74,17 @@ fi
 echo "=== [6/6] Installera cron-jobb ==="
 # US-börsen stänger 16:00 ET = 21:00 UTC (vintertid EST) / 20:00 UTC (sommartid EDT)
 # Vi kör 21:10 UTC — täcker båda DST-lägena och ger yfinance tid att uppdatera
-CRON_LINE="10 21 * * 1-5 cd $APP_DIR && set -a && source .env && set +a && .venv/bin/python live.py >> logs/live.log 2>&1"
+CRON_LIVE="10 21 * * 1-5 cd $APP_DIR && set -a && source .env && set +a && .venv/bin/python live.py >> logs/live.log 2>&1"
+CRON_REPORT="15 21 * * 1-5 cd $APP_DIR && .venv/bin/python report.py >> logs/live.log 2>&1"
 
 if sudo -u "$APP_USER" crontab -l 2>/dev/null | grep -qF "live.py"; then
     echo "Cron-jobb finns redan — uppdaterar inte"
 else
-    (sudo -u "$APP_USER" crontab -l 2>/dev/null; echo "$CRON_LINE") | sudo -u "$APP_USER" crontab -
-    echo "Cron-jobb installerat: 21:10 UTC vardagar (23:10 CET / 22:10 CEST)"
+    (sudo -u "$APP_USER" crontab -l 2>/dev/null; echo "$CRON_LIVE"; echo "$CRON_REPORT") \
+        | sudo -u "$APP_USER" crontab -
+    echo "Cron-jobb installerade:"
+    echo "  21:10 UTC — live.py  (trading)"
+    echo "  21:15 UTC — report.py (rapport + git push)"
 fi
 
 echo ""
