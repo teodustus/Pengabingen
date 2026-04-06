@@ -30,21 +30,29 @@ def compute_returns(prices_monthly: pd.DataFrame, months: int) -> pd.DataFrame:
     return prices_monthly.pct_change(periods=months)
 
 
-def composite_momentum(prices_monthly: pd.DataFrame) -> pd.DataFrame:
+def composite_momentum(
+    prices_monthly: pd.DataFrame,
+    lookbacks: tuple[int, ...] | None = None,
+) -> pd.DataFrame:
     """
-    Sammansatt momentum-score: ovägt genomsnitt av 3-, 6- och 12-månaders avkastning.
+    Sammansatt momentum-score: ovägt genomsnitt av avkastning för angivna lookbacks.
 
-    OBS: Antonaccis originalmetod — 3-månadersfönstret är implicit med i alla tre
-    beräkningar. Det är avsiktligt och ger något mer vikt åt det senaste kvartalets rörelse.
+    lookbacks: tuple av månader, t.ex. (3, 6, 12). Standard: LOOKBACK_MONTHS.
+
+    OBS: Antonaccis originalmetod med (3,6,12) — 3-månadersfönstret är implicit
+    med i alla tre beräkningar och ger mer vikt åt det senaste kvartalets rörelse.
 
     Returnerar DataFrame: månadsslut-datum som index, tickers som kolumner.
     """
-    returns = [compute_returns(prices_monthly, m) for m in LOOKBACK_MONTHS]
-    # Elementvis medelvärde — alla DataFrames har samma index och kolumner
+    windows = lookbacks or tuple(LOOKBACK_MONTHS)
+    returns = [compute_returns(prices_monthly, m) for m in windows]
     return sum(returns) / len(returns)
 
 
-def rank_universe(prices: pd.DataFrame) -> pd.DataFrame:
+def rank_universe(
+    prices: pd.DataFrame,
+    lookbacks: tuple[int, ...] | None = None,
+) -> pd.DataFrame:
     """
     Huvud-API. Tar dagliga priser och returnerar en historisk ranknings-DataFrame.
 
@@ -52,6 +60,8 @@ def rank_universe(prices: pd.DataFrame) -> pd.DataFrame:
       - Index:   månadsslut-datum
       - Kolumner: tickers i UNIVERSE (ej CASH_TICKER/BIL)
       - Värden:  rank (1 = högst momentum), NaN = failade absolut momentum-filter
+
+    lookbacks: tuple av månader för composite momentum. Standard: (3, 6, 12).
 
     Absolut momentum-filter: ticker exkluderas om dess composite-score
     understiger CASH_TICKER (BIL):s composite-score för samma period.
@@ -64,7 +74,7 @@ def rank_universe(prices: pd.DataFrame) -> pd.DataFrame:
         raise ValueError(f"{CASH_TICKER} saknas i prices — krävs för absolut momentum-filter")
 
     monthly = monthly_prices(prices)
-    scores = composite_momentum(monthly)
+    scores = composite_momentum(monthly, lookbacks=lookbacks)
 
     # Absolut filter: exkludera tickers som underpresterar BIL
     bil_scores = scores[CASH_TICKER]

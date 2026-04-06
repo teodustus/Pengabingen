@@ -76,15 +76,17 @@ echo "=== [6/6] Installera cron-jobb ==="
 # Vi kör 21:10 UTC — täcker båda DST-lägena och ger yfinance tid att uppdatera
 CRON_LIVE="10 21 * * 1-5 cd $APP_DIR && set -a && source .env && set +a && .venv/bin/python live.py >> logs/live.log 2>&1"
 CRON_REPORT="15 21 * * 1-5 cd $APP_DIR && .venv/bin/python report.py >> logs/live.log 2>&1"
+CRON_WATCHDOG="40 21 * * 1-5 cd $APP_DIR && set -a && source .env && set +a && .venv/bin/python watchdog.py >> logs/live.log 2>&1"
 
 if sudo -u "$APP_USER" crontab -l 2>/dev/null | grep -qF "live.py"; then
     echo "Cron-jobb finns redan — uppdaterar inte"
 else
-    (sudo -u "$APP_USER" crontab -l 2>/dev/null; echo "$CRON_LIVE"; echo "$CRON_REPORT") \
+    (sudo -u "$APP_USER" crontab -l 2>/dev/null; echo "$CRON_LIVE"; echo "$CRON_REPORT"; echo "$CRON_WATCHDOG") \
         | sudo -u "$APP_USER" crontab -
     echo "Cron-jobb installerade:"
-    echo "  21:10 UTC — live.py  (trading)"
-    echo "  21:15 UTC — report.py (rapport + git push)"
+    echo "  21:10 UTC — live.py     (trading)"
+    echo "  21:15 UTC — report.py   (rapport + git push)"
+    echo "  21:40 UTC — watchdog.py (health check)"
 fi
 
 echo ""

@@ -48,7 +48,7 @@ log = logging.getLogger(__name__)
 TG_TOKEN   = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-LIVE_DB_PATH = Path("live_state.db")
+LIVE_DB_PATH: Path | str = Path("live_state.db")
 
 
 # ── TELEGRAM (valfritt) ──────────────────────────────────────
@@ -68,9 +68,9 @@ def send_telegram(message: str) -> None:
 
 # ── LIVE-DATABAS ──────────────────────────────────────────────
 
-def init_live_db(path: Path = LIVE_DB_PATH) -> sqlite3.Connection:
+def init_live_db(path: Path | str = LIVE_DB_PATH) -> sqlite3.Connection:
     """Initierar SQLite-databas för paper trading-tillstånd."""
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(str(path))
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS account (
             key   TEXT PRIMARY KEY,
@@ -100,6 +100,11 @@ def init_live_db(path: Path = LIVE_DB_PATH) -> sqlite3.Connection:
             portfolio_value REAL NOT NULL,
             daily_return    REAL
         );
+
+        CREATE TABLE IF NOT EXISTS heartbeats (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL
+        );
     """)
     conn.commit()
     return conn
@@ -120,7 +125,7 @@ def _get_cash(conn: sqlite3.Connection) -> float:
 
 
 def _set_cash(conn: sqlite3.Connection, amount: float) -> None:
-    conn.execute("UPDATE account SET value = ? WHERE key = 'cash'", (amount,))
+    conn.execute("INSERT OR REPLACE INTO account (key, value) VALUES ('cash', ?)", (amount,))
     conn.commit()
 
 
@@ -142,6 +147,23 @@ def save_position(conn: sqlite3.Connection, ticker: str, qty: float, avg_price: 
 def remove_position(conn: sqlite3.Connection, ticker: str) -> None:
     conn.execute("DELETE FROM positions WHERE ticker = ?", (ticker,))
     conn.commit()
+
+
+def log_heartbeat(conn: sqlite3.Connection) -> None:
+    """Skriver en tidsstämpel vid varje lyckad körning — används av watchdog."""
+    ts = datetime.now(timezone.utc).isoformat()
+    conn.execute("INSERT INTO heartbeats (timestamp) VALUES (?)", (ts,))
+    conn.commit()
+
+
+def latest_heartbeat(conn: sqlite3.Connection) -> datetime | None:
+    """Returnerar tidpunkt för senaste lyckade körning, eller None."""
+    row = conn.execute(
+        "SELECT timestamp FROM heartbeats ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return None
+    return datetime.fromisoformat(row[0])
 
 
 def log_trade(conn: sqlite3.Connection, ticker: str, action: str,
@@ -253,17 +275,33 @@ def sim_close(conn: sqlite3.Connection, ticker: str, price: float, action: str =
 
 # ── HJÄLPFUNKTIONER ───────────────────────────────────────────
 
-def is_rebalance_day() -> bool:
-    """Returnerar True om idag är sista handelsdagen i månaden."""
-    today = pd.Timestamp.now(tz="America/New_York").normalize()
+def is_rebalance_day(as_of: pd.Timestamp | None = None) -> bool:
+    """
+    Returnerar True om datumet är sista US-handelsdagen i månaden.
+
+    as_of: valfritt datum (används i tester). Standard: idag i ET-tidszon.
+
+    Logik: om nästa US-handelsdag (inkl. federala helgdagar) tillhör en
+    annan månad är dagens datum sista handelsdagen i månaden.
+    """
+    if as_of is None:
+        today = pd.Timestamp.now(tz="America/New_York").normalize()
+    else:
+        today = pd.Timestamp(as_of).normalize()
+
+    # Normalisera till naiv timestamp för offset-aritmetik
+    today_naive = today.tz_localize(None) if today.tzinfo is None \
+                  else today.tz_convert(None)
+
     try:
         from pandas.tseries.holiday import USFederalHolidayCalendar
         from pandas.tseries.offsets import CustomBusinessDay
-        us_bd = CustomBusinessDay(calendar=USFederalHolidayCalendar())
-        next_bd = today + us_bd
+        next_bd = today_naive + CustomBusinessDay(n=1, calendar=USFederalHolidayCalendar())
     except Exception:
-        next_bd = today + pd.offsets.BDay(1)
-    return today.month != next_bd.month
+        log.warning("USFederalHolidayCalendar ej tillganglig — använder BDay (helgdagar ej exkluderade)")
+        next_bd = today_naive + pd.offsets.BDay(1)
+
+    return today_naive.month != next_bd.month
 
 
 def get_latest_prices(prices: pd.DataFrame) -> dict[str, float]:
@@ -349,6 +387,7 @@ def run_daily() -> None:
 
     # 2. Hämta senaste priser och beräkna portföljvärde
     live_conn = init_live_db()
+    log_heartbeat(live_conn)
     current_prices = get_latest_prices(prices)
 
     if not current_prices:

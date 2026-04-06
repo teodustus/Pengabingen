@@ -15,7 +15,7 @@
 import logging
 import sqlite3
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -134,12 +134,19 @@ def load_portfolio_summary(conn: sqlite3.Connection) -> dict:
             "latest_value": float(pv.iloc[-1]),
         }
 
+    # Health check: senaste heartbeat
+    hb_row = conn.execute(
+        "SELECT timestamp FROM heartbeats ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    last_heartbeat = datetime.fromisoformat(hb_row[0]) if hb_row else None
+
     return {
-        "cash":      cash,
-        "positions": positions,
-        "pnl":       pnl,
-        "trades":    trades,
-        "metrics":   metrics,
+        "cash":           cash,
+        "positions":      positions,
+        "pnl":            pnl,
+        "trades":         trades,
+        "metrics":        metrics,
+        "last_heartbeat": last_heartbeat,
     }
 
 
@@ -308,8 +315,31 @@ def build_report(market: dict, portfolio: dict | None) -> str:
             )
     lines.append("")
 
-    # ── 4. FÖRKLARINGAR ──────────────────────────────────────
-    lines.append("## 4. Förklaringar")
+    # ── 4. HÄLSOSTATUS ───────────────────────────────────────
+    lines.append("## 4. Systemhälsa")
+    lines.append("")
+    hb = portfolio.get("last_heartbeat")
+    now_utc = datetime.now(timezone.utc)
+    if hb is None:
+        lines.append("live.py har inte körts ännu.")
+    else:
+        hb_utc = hb if hb.tzinfo else hb.replace(tzinfo=timezone.utc)
+        age_h  = (now_utc - hb_utc).total_seconds() / 3600
+        if age_h > 25:
+            lines.append(
+                f"**VARNING:** live.py kördes senast för {age_h:.0f} timmar sedan "
+                f"({hb_utc.strftime('%Y-%m-%d %H:%M')} UTC). "
+                f"Kontrollera cron och logs/live.log."
+            )
+        else:
+            lines.append(
+                f"live.py kördes {hb_utc.strftime('%Y-%m-%d %H:%M')} UTC "
+                f"({age_h:.1f}h sedan). ✓"
+            )
+    lines.append("")
+
+    # ── 5. FÖRKLARINGAR ──────────────────────────────────────
+    lines.append("## 5. Förklaringar")
     lines.append("")
     lines.append("| Term | Förklaring |")
     lines.append("|------|-----------|")
@@ -334,7 +364,7 @@ def git_push_report(report_path: Path) -> bool:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     try:
         files_to_add = [str(report_path)]
-        if LIVE_DB_PATH.exists():
+        if Path(LIVE_DB_PATH).exists():
             files_to_add.append(str(LIVE_DB_PATH))
         subprocess.run(["git", "add"] + files_to_add, check=True, capture_output=True)
         result = subprocess.run(
@@ -342,7 +372,7 @@ def git_push_report(report_path: Path) -> bool:
             capture_output=True,
         )
         if result.returncode == 0:
-            log.info("Ingen förändring i rapporten — hoppar över commit")
+            log.info("Ingen förändring — hoppar över commit")
             return True
 
         subprocess.run(
@@ -350,12 +380,20 @@ def git_push_report(report_path: Path) -> bool:
             check=True, capture_output=True,
         )
 
+        # Synka med remote innan push för att undvika konflikter
+        pull = subprocess.run(
+            ["git", "pull", "--rebase", "origin", "main"],
+            capture_output=True,
+        )
+        if pull.returncode != 0:
+            log.warning("git pull --rebase misslyckades: %s", pull.stderr.decode())
+
         # Retry med exponential backoff vid nätverksfel
-        for wait in [0, 2, 4, 8, 16]:
+        import time as _time
+        for attempt, wait in enumerate([0, 2, 4, 8, 16]):
             if wait:
-                import time
-                log.warning("git push misslyckades — försöker igen om %ds", wait)
-                time.sleep(wait)
+                log.warning("git push misslyckades (forsok %d) — väntar %ds", attempt, wait)
+                _time.sleep(wait)
             try:
                 subprocess.run(
                     ["git", "push", "-u", "origin", "main"],
@@ -366,7 +404,7 @@ def git_push_report(report_path: Path) -> bool:
             except subprocess.CalledProcessError:
                 continue
 
-        log.error("git push misslyckades efter fyra försök")
+        log.error("git push misslyckades efter fem forsok")
         return False
 
     except subprocess.CalledProcessError as e:

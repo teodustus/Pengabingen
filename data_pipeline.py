@@ -5,6 +5,7 @@
 # Installera: pip install yfinance pandas numpy
 # ============================================================
 
+import time
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -53,27 +54,49 @@ def init_db(db_path=DB_PATH):
 
 # ── DATAHÄMTNING ──────────────────────────────────────────────
 
-def fetch_ticker(ticker: str, start: str = "2010-01-01", end: str | None = None) -> pd.DataFrame:
-    """Hämtar daglig OHLCV-data för en ticker via yfinance."""
+def fetch_ticker(
+    ticker: str,
+    start: str = "2010-01-01",
+    end: str | None = None,
+    retries: int = 3,
+) -> pd.DataFrame:
+    """
+    Hämtar daglig OHLCV-data för en ticker via yfinance.
+    Försöker upp till `retries` gånger med exponentiell backoff vid fel eller tom data.
+    """
     end = end or datetime.today().strftime("%Y-%m-%d")
-    try:
-        df = yf.download(ticker, start=start, end=end, auto_adjust=True, progress=False)
-        if df.empty:
-            log.warning("Ingen data för %s", ticker)
-            return pd.DataFrame()
 
-        df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
-        df.columns = ["open", "high", "low", "close", "volume"]
-        df["adj_close"] = df["close"]   # auto_adjust=True justerar redan
-        df.index = pd.to_datetime(df.index).strftime("%Y-%m-%d")
-        df.index.name = "date"
-        df["ticker"] = ticker
-        df.dropna(subset=["close"], inplace=True)
-        return df
+    for attempt in range(retries):
+        try:
+            df = yf.download(ticker, start=start, end=end, auto_adjust=True, progress=False)
 
-    except Exception as e:
-        log.error("Fel vid hämtning av %s: %s", ticker, e)
-        return pd.DataFrame()
+            if df.empty:
+                if attempt < retries - 1:
+                    wait = 2 ** attempt
+                    log.warning("Tom data for %s (forsok %d/%d) — väntar %ds", ticker, attempt + 1, retries, wait)
+                    time.sleep(wait)
+                    continue
+                log.warning("Ingen data for %s efter %d forsok", ticker, retries)
+                return pd.DataFrame()
+
+            df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
+            df.columns = ["open", "high", "low", "close", "volume"]
+            df["adj_close"] = df["close"]   # auto_adjust=True justerar redan
+            df.index = pd.to_datetime(df.index).strftime("%Y-%m-%d")
+            df.index.name = "date"
+            df["ticker"] = ticker
+            df.dropna(subset=["close"], inplace=True)
+            return df
+
+        except Exception as e:
+            if attempt < retries - 1:
+                wait = 2 ** attempt
+                log.warning("Fel vid hamtning av %s (forsok %d/%d): %s — väntar %ds", ticker, attempt + 1, retries, e, wait)
+                time.sleep(wait)
+            else:
+                log.error("Fel vid hamtning av %s: %s", ticker, e)
+
+    return pd.DataFrame()
 
 
 def save_to_db(conn: sqlite3.Connection, ticker: str, df: pd.DataFrame) -> int:

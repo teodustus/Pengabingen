@@ -8,7 +8,7 @@ import logging
 import numpy as np
 import pandas as pd
 
-from config import CASH_TICKER, MARKET_TICKER
+from config import CASH_TICKER, DB_PATH, MARKET_TICKER
 from portfolio import MAX_DAILY_LOSS, MAX_DRAWDOWN, STOP_LOSS, TOP_N, target_weights
 
 log = logging.getLogger(__name__)
@@ -195,7 +195,8 @@ def simulate(
     trades_df = pd.DataFrame(trades) if trades else pd.DataFrame(
         columns=["date", "ticker", "action", "amount", "cost"]
     )
-    return pv, trades_df
+    total_cost = float(trades_df["cost"].sum()) if not trades_df.empty else 0.0
+    return pv, trades_df, total_cost
 
 
 # ── NYCKELTAL ─────────────────────────────────────────────────
@@ -255,6 +256,8 @@ def performance_metrics(
         "n_months":            n_months,
         "bench_cagr":          bench_cagr,
         "bench_sharpe":        bench_sharpe,
+        "total_cost":          0.0,   # fylls i av anroparen
+        "cost_drag_ann":       0.0,   # fylls i av anroparen
     }
 
 
@@ -278,6 +281,8 @@ def print_metrics(m: dict) -> None:
     print(f"  Max drawdown:        {m['max_drawdown']*100:>8.1f}%  (krav > -20%)")
     print(f"  Positiva manader:    {m['pct_positive_months']*100:>8.1f}%  (krav > 60%)")
     print(f"  Antal manader:       {m['n_months']:>8d}")
+    if m.get("total_cost", 0) > 0:
+        print(f"  Transaktionskostn:  ${m['total_cost']:>8,.0f}  ({m['cost_drag_ann']*100:.2f}%/år)")
     print(f"  {'─'*40}")
     print(f"  SPY CAGR:            {m['bench_cagr']*100:>8.1f}%")
     print(f"  SPY Sharpe:          {m['bench_sharpe']:>8.2f}")
@@ -317,6 +322,81 @@ def split_data(
         "test":       (_slice(prices, "2021-01-01", None),
                        _slice(weights, "2021-01-01", None)),
     }
+
+
+# ── PARAMETER GRID ────────────────────────────────────────────
+
+def parameter_grid(
+    prices: pd.DataFrame,
+    regime: pd.DataFrame,
+    lookback_combos: list[tuple] | None = None,
+    top_n_values: list[int] | None = None,
+) -> pd.DataFrame:
+    """
+    Testar kombinationer av TOP_N och momentum-lookbacks på träningsdata (2010-2017).
+
+    Returnerar DataFrame sorterad efter Sharpe — en rad per kombination.
+    Kör BARA på träningsdata (fram till TRAIN_END). Testdata är helig.
+
+    Args:
+        prices:          dagliga justerade stängningspriser
+        regime:          marknadsregim (redan shiftad med .shift(1))
+        lookback_combos: lista av tuples, t.ex. [(3,6,12), (1,3,6)]
+        top_n_values:    lista av heltal, t.ex. [3, 4, 5]
+    """
+    from momentum import rank_universe
+
+    top_n_values    = top_n_values    or [3, 4, 5]
+    lookback_combos = lookback_combos or [
+        (3, 6, 12),   # standard (Antonacci)
+        (1, 3, 6),    # kortsiktigare
+        (6, 12, 24),  # långsiktigare
+    ]
+
+    train_prices = prices.loc["2010-01-01":TRAIN_END]
+    bench_train  = prices[MARKET_TICKER].loc["2010-01-01":TRAIN_END]
+    bil_period   = prices[CASH_TICKER].loc["2010-01-01":TRAIN_END].dropna()
+    bil_yrs      = len(bil_period) / 252.0
+    rfr = float(
+        (bil_period.iloc[-1] / bil_period.iloc[0]) ** (1.0 / bil_yrs) - 1.0
+    ) if bil_yrs > 0 else 0.0
+
+    results = []
+    for lookbacks in lookback_combos:
+        try:
+            ranks = rank_universe(prices, lookbacks=lookbacks).shift(1)
+        except TypeError:
+            log.warning("rank_universe stodjer inte lookbacks-parametern — hoppar over %s", lookbacks)
+            continue
+
+        for top_n in top_n_values:
+            try:
+                w       = target_weights(ranks, regime, top_n=top_n)
+                w_train = w.loc[w.index <= TRAIN_END]
+                if w_train.empty:
+                    continue
+
+                pv, _, total_cost = simulate(train_prices, w_train)
+                bench = bench_train / bench_train.iloc[0] * pv.iloc[0]
+                years = len(pv) / 252.0
+                m     = performance_metrics(pv, bench, risk_free_rate=rfr)
+
+                results.append({
+                    "lookbacks":  str(lookbacks),
+                    "top_n":      top_n,
+                    "cagr_%":     round(m["cagr"] * 100, 1),
+                    "sharpe":     round(m["sharpe"], 2),
+                    "max_dd_%":   round(m["max_drawdown"] * 100, 1),
+                    "pos_mon_%":  round(m["pct_positive_months"] * 100, 1),
+                    "cost_%/år":  round(total_cost / 100_000 / years * 100, 2) if years > 0 else 0,
+                })
+            except Exception as e:
+                log.warning("Grid-fel top_n=%d lookbacks=%s: %s", top_n, lookbacks, e)
+
+    if not results:
+        return pd.DataFrame()
+
+    return pd.DataFrame(results).sort_values("sharpe", ascending=False).reset_index(drop=True)
 
 
 # ── HUVUDPROGRAM ──────────────────────────────────────────────
@@ -365,7 +445,7 @@ if __name__ == "__main__":
         label    = f"{period_name.upper()} ({start_yr}-{end_yr})"
         log.info("Kör backtest: %s", label)
 
-        pv, trades = simulate(p_prices, p_weights)
+        pv, trades, total_cost = simulate(p_prices, p_weights)
 
         bench = benchmark_all.loc[p_prices.index[0]:p_prices.index[-1]]
         bench = bench / bench.iloc[0] * pv.iloc[0]
@@ -375,8 +455,24 @@ if __name__ == "__main__":
         bil_yrs = len(bil_period) / 252.0
         rfr = float((bil_period.iloc[-1] / bil_period.iloc[0]) ** (1.0 / bil_yrs) - 1.0) if bil_yrs > 0 else 0.0
 
+        years = len(pv) / 252.0
         m = performance_metrics(pv, bench, label=label, risk_free_rate=rfr)
+        m["total_cost"]    = total_cost
+        m["cost_drag_ann"] = total_cost / 100_000.0 / years if years > 0 else 0.0
         print_metrics(m)
         log.info("Antal affarer: %d", len(trades))
 
     log.info("Backtest klar.")
+
+    # ── PARAMETER GRID (enbart träningsdata) ──────────────────
+    print("\n" + "═" * 70)
+    print("  PARAMETER GRID — träningsdata (2010-2017)")
+    print("  OBS: Optimera aldrig mot validerings- eller testdata")
+    print("═" * 70)
+    regime_shifted = market_regime(prices, vix).shift(1)
+    grid = parameter_grid(prices, regime_shifted)
+    if not grid.empty:
+        print(grid.to_string(index=False))
+    else:
+        print("  Inga resultat (saknar lookbacks-stöd i momentum.py?)")
+    print()
